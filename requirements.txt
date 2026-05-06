@@ -1,0 +1,8 @@
+fastapi>=0.104.0
+uvicorn[standard]>=0.24.0
+pydantic>=2.0
+redis[hiredis]>=5.0
+kubernetes>=28.0
+httpx>=0.28.1
+python-dotenv
+hermes-agent @ git+https://github.com/NousResearch/hermes-agent.git

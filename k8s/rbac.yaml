@@ -1,0 +1,33 @@
+# RBAC — 控制面需要权限创建/删除 Pod
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: hermes-sa
+  namespace: hermes-runtime
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: hermes-pod-manager
+  namespace: hermes-runtime
+rules:
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["create", "delete", "get", "list", "watch"]
+  - apiGroups: [""]
+    resources: ["pods/status"]
+    verbs: ["get"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: hermes-pod-manager-binding
+  namespace: hermes-runtime
+subjects:
+  - kind: ServiceAccount
+    name: hermes-sa
+    namespace: hermes-runtime
+roleRef:
+  kind: Role
+  name: hermes-pod-manager
+  apiGroup: rbac.authorization.k8s.io
