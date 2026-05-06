@@ -1,5 +1,0 @@
-# Legacy / optional: sidecar image that only exposed POST /execute (no longer used by default).
-# The control plane now embeds hermes-agent via the root requirements.txt.
-fastapi>=0.104.0,<1
-uvicorn[standard]>=0.24.0,<1
-hermes-agent @ git+https://github.com/NousResearch/hermes-agent.git

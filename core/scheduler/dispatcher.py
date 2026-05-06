@@ -1,4 +1,5 @@
 """Dispatcher — FastAPI entry; Hermes runs in this process (OpenClaw-style split: brain on host)."""
+from infra.agentscope_sandbox_service import agentscope_sandbox_status
 from runtime.agent.agent_factory import HermesRuntimeBridge, create_agent
 from core.session.session_router import SessionRouter
 
@@ -22,4 +23,11 @@ class Dispatcher:
                 "terminal/tool sandboxing uses Hermes terminal.backend "
                 "(e.g. docker on the host — see Hermes Docker backend docs)."
             ),
+            "agentscope_runtime": agentscope_sandbox_status(),
+            "sandbox_http_api": {
+                "prefix": "/sandbox/v1",
+                "acquire": "POST /sandbox/v1/acquire",
+                "release": "POST /sandbox/v1/release",
+                "status": "GET /sandbox/v1/status",
+            },
         }

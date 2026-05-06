@@ -14,7 +14,7 @@ curl -s "$BASE/health" | python3 -m json.tool
 
 # 2. 状态
 echo ""
-echo "📊 2. 池状态..."
+echo "📊 2. /status..."
 curl -s "$BASE/status" | python3 -m json.tool
 
 # 3. 聊天请求

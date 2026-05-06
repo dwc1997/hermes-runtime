@@ -1,11 +1,19 @@
 """API 路由 — OpenAI 兼容 + 管理端点"""
 import time
 import uuid
-from fastapi import APIRouter
+from fastapi import APIRouter, HTTPException
 from core.scheduler.dispatcher import Dispatcher
+from core.sandbox_service import SandboxService
+from infra.agentscope_sandbox_service import agentscope_sandbox_status
 from models.request import ChatRequest
+from models.sandbox_contract import (
+    SandboxAcquireRequest,
+    SandboxAcquireResponse,
+    SandboxReleaseRequest,
+)
 
 router = APIRouter()
+sandbox_router = APIRouter(prefix="/sandbox/v1", tags=["sandbox"])
 dispatcher = Dispatcher()
 
 
@@ -54,3 +62,38 @@ async def status():
 async def destroy_session(session_id: str):
     await dispatcher.destroy_session(session_id)
     return {"destroyed": session_id}
+
+
+@sandbox_router.get("/status")
+async def sandbox_plane_status():
+    """Whether SandboxService can acquire/release."""
+    return {
+        "sandbox_service_enabled": SandboxService.enabled(),
+        "agentscope_runtime": agentscope_sandbox_status(),
+    }
+
+
+@sandbox_router.post("/acquire", response_model=SandboxAcquireResponse)
+async def sandbox_acquire(body: SandboxAcquireRequest):
+    """Bind a logical session to a sandbox container (pool or remote manager)."""
+    try:
+        data = await SandboxService.acquire(
+            session_ctx_id=body.session_ctx_id,
+            sandbox_type=body.sandbox_type,
+            meta=body.meta,
+        )
+        return SandboxAcquireResponse(**data)
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+
+@sandbox_router.post("/release")
+async def sandbox_release(body: SandboxReleaseRequest):
+    """Release a sandbox container back to the manager."""
+    try:
+        ok = await SandboxService.release(body.container_name)
+        return {"released": body.container_name, "ok": ok}
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+router.include_router(sandbox_router)

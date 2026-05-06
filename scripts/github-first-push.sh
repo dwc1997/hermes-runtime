@@ -2,14 +2,16 @@
 # Prepare repo and set remote. Create an EMPTY GitHub repo first (no README).
 #
 # Usage:
-#   bash scripts/github-first-push.sh https://github.com/YOU/agent-runtime.git
+#   bash scripts/github-first-push.sh
+#   bash scripts/github-first-push.sh https://github.com/YOU/other-repo.git
 #   git push -u origin main
 #
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
 
-REMOTE="${1:?Usage: $0 https://github.com/<you>/<repo>.git}"
+DEFAULT_REMOTE="https://github.com/dwc1997/hermes-runtime.git"
+REMOTE="${1:-$DEFAULT_REMOTE}"
 
 if [[ ! -d .git ]]; then
   git init

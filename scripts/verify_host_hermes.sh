@@ -9,7 +9,7 @@
 # Chat round-trip runs when OPENROUTER_API_KEY is set OR ~/.hermes/.env exists.
 #
 # Optional cleanup (NOT run automatically — destructive):
-#   docker rmi hermes-runtime:latest agent-runtime:latest
+#   docker rmi agent-runtime:latest
 #   kind delete cluster --name hermes-runtime
 #
 # Redis binds host port VERIFY_REDIS_HOST_PORT (default 16379) to avoid clashing
@@ -160,6 +160,6 @@ echo "  See: https://hermes-agent.nousresearch.com/docs/user-guide/docker"
 echo ""
 echo "  Manual image/container cleanup (optional):"
 echo "    docker rm -f agent-runtime-redis   # frees host port ${VERIFY_REDIS_HOST_PORT}"
-echo "    docker rmi hermes-runtime:latest   # old per-pod image, if present"
+echo "    docker rmi agent-runtime:latest    # local build tag, if present"
 echo "    kind delete cluster --name hermes-runtime   # if you used Kind before"
 echo "═══════════════════════════════════════════════════════════"

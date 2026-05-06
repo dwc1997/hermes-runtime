@@ -6,9 +6,7 @@ import os
 import time
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-os.environ["USE_DOCKER"] = "true"
-os.environ["REDIS_URL"] = "redis://localhost:6379/0"
-os.environ["SANDBOX_IMAGE"] = "hermes-runtime:latest"
+os.environ.setdefault("REDIS_URL", "redis://localhost:6379/0")
 
 import httpx
 
@@ -26,7 +24,7 @@ async def test_e2e():
     proc = subprocess.Popen(
         [sys.executable, "-m", "uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"],
         cwd=os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-        env={**os.environ, "USE_DOCKER": "true", "REDIS_URL": "redis://localhost:6379/0"},
+        env={**os.environ},
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
     )

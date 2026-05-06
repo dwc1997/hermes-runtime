@@ -1,4 +1,7 @@
-"""Code Skill — 沙箱内代码执行"""
+"""Code skill — ephemeral BaseSandbox demo.
+
+For pooled lifecycle use AgentScope ``SandboxManager`` (see ``infra/agentscope_sandbox_service.py``).
+"""
 from runtime.skill.registry import BaseSkill
 
 
