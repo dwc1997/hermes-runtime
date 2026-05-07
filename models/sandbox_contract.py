@@ -17,3 +17,13 @@ class SandboxAcquireResponse(BaseModel):
 
 class SandboxReleaseRequest(BaseModel):
     container_name: str = Field(..., min_length=1)
+
+
+class SandboxRunPythonRequest(BaseModel):
+    container_name: str = Field(..., min_length=1)
+    code: str = Field(..., min_length=1)
+
+
+class SandboxRunShellRequest(BaseModel):
+    container_name: str = Field(..., min_length=1)
+    command: str = Field(..., min_length=1)

@@ -28,6 +28,8 @@ class Dispatcher:
                 "prefix": "/sandbox/v1",
                 "acquire": "POST /sandbox/v1/acquire",
                 "release": "POST /sandbox/v1/release",
+                "run_python": "POST /sandbox/v1/run-python",
+                "run_shell": "POST /sandbox/v1/run-shell",
                 "status": "GET /sandbox/v1/status",
             },
         }

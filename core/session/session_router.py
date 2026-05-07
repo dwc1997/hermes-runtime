@@ -4,6 +4,11 @@ import time
 from typing import Any, Dict, List
 
 from infra.redis_client import session_delete, session_get, session_set
+from infra.session_sandbox_bind import (
+    ensure_session_sandbox,
+    release_session_sandbox,
+    touch_sandbox_bind_ttl,
+)
 from runtime.agent.agent_factory import HermesRuntimeBridge
 
 logger = logging.getLogger(__name__)
@@ -33,6 +38,9 @@ class SessionRouter:
         state["message_count"] = state.get("message_count", 0) + 1
         await session_set(session_id, state)
 
+        await ensure_session_sandbox(session_id, self.hermes)
+        await touch_sandbox_bind_ttl(session_id)
+
         user_text = _last_user_text(request.get("messages", []))
         content = await self.hermes.arun(
             user_text,
@@ -42,6 +50,7 @@ class SessionRouter:
         return {"role": "assistant", "content": content}
 
     async def destroy_session(self, session_id: str):
+        await release_session_sandbox(session_id, self.hermes)
         self.hermes.clear_session(session_id)
         await session_delete(session_id)
         logger.info("Session destroyed session_id=%s", session_id)

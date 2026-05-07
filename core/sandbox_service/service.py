@@ -57,3 +57,39 @@ class SandboxService:
         ok = await mgr.release_async(container_name)
         logger.info("Sandbox release container_name=%s ok=%s", container_name, ok)
         return bool(ok)
+
+    @staticmethod
+    async def call_tool(
+        container_name: str,
+        tool_name: str,
+        arguments: Optional[Dict[str, Any]] = None,
+    ) -> Any:
+        """Invoke a tool inside the sandbox HTTP runtime (AgentScope convention).
+
+        Common built-ins: ``run_ipython_cell`` (args: ``code``), ``run_shell_command``
+        (args: ``command``). See sandbox container ``/mcp/list_tools``.
+        """
+        mgr = get_agentscope_sandbox_manager()
+        if mgr is None:
+            raise RuntimeError("Sandbox backend disabled.")
+        return await mgr.call_tool_async(
+            identity=container_name,
+            tool_name=tool_name,
+            arguments=arguments or {},
+        )
+
+    @staticmethod
+    async def run_python(container_name: str, code: str) -> Any:
+        return await SandboxService.call_tool(
+            container_name,
+            "run_ipython_cell",
+            {"code": code},
+        )
+
+    @staticmethod
+    async def run_shell(container_name: str, command: str) -> Any:
+        return await SandboxService.call_tool(
+            container_name,
+            "run_shell_command",
+            {"command": command},
+        )

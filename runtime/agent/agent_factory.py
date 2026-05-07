@@ -25,10 +25,14 @@ class HermesRuntimeBridge:
     Hermes AIAgent on the host: one installation, in-process calls.
 
     Session isolation: conversation_history + task_id per session_id.
-    Tool/exec isolation: configure Hermes ``terminal.backend: docker`` (or ssh/modal/...)
-    so shells run outside this process — see Hermes docs:
-    https://hermes-agent.nousresearch.com/docs/user-guide/docker
+    Optional: bind each session_id to an AgentScope sandbox (SANDBOX_BIND_SESSION)
+    and route shell/Python off the host via sandbox_shell / sandbox_python
+    (SANDBOX_ROUTE_HERMES_TOOLS), disabling Hermes built-in terminal and code_execution.
     """
+
+    _gateway_tools_registered = False
+    # Hermes toolsets that run on the API host; replaced by gateway_sandbox when routing.
+    _ROUTED_HOST_TOOLSETS = ("terminal", "code_execution")
 
     def __init__(self) -> None:
         try:
@@ -42,6 +46,7 @@ class HermesRuntimeBridge:
         self._histories: Dict[str, List[Dict[str, Any]]] = {}
         self._session_locks: Dict[str, threading.Lock] = {}
         self._locks_guard = threading.Lock()
+        self._sandbox_container_by_session: Dict[str, str] = {}
         self._model = os.getenv("HERMES_MODEL") or os.getenv("LLM_MODEL") or ""
         self._disabled = _split_csv(os.getenv("HERMES_DISABLED_TOOLSETS", ""))
         self._enabled = _split_csv(os.getenv("HERMES_ENABLED_TOOLSETS", ""))
@@ -53,6 +58,15 @@ class HermesRuntimeBridge:
         self._platform = os.getenv("HERMES_PLATFORM") or None
         _ep = os.getenv("HERMES_SYSTEM_PROMPT")
         self._ephemeral_system_prompt = _ep if _ep else None
+
+    def get_sandbox_container(self, session_id: str) -> Optional[str]:
+        return self._sandbox_container_by_session.get(session_id)
+
+    def set_sandbox_container(self, session_id: str, container_name: str) -> None:
+        self._sandbox_container_by_session[session_id] = container_name
+
+    def clear_sandbox_container(self, session_id: str) -> None:
+        self._sandbox_container_by_session.pop(session_id, None)
 
     def _resolve_model(self, request_model: Optional[str]) -> Optional[str]:
         """Prefer explicit API model, then env; omit so Hermes loads ~/.hermes/config.yaml."""
@@ -78,10 +92,58 @@ class HermesRuntimeBridge:
                 self._histories.pop(session_id, None)
         else:
             self._histories.pop(session_id, None)
+        self.clear_sandbox_container(session_id)
         with self._locks_guard:
             self._session_locks.pop(session_id, None)
 
+    def _should_route_hermes_tools_to_sandbox(self) -> bool:
+        try:
+            from infra.agentscope_sandbox_service import get_agentscope_sandbox_manager
+            from infra.runtime_sandbox_flags import sandbox_route_hermes_tools_enabled
+
+            return (
+                sandbox_route_hermes_tools_enabled()
+                and get_agentscope_sandbox_manager() is not None
+            )
+        except Exception:
+            return False
+
+    @classmethod
+    def _strip_routed_host_toolsets(cls, names: List[str]) -> List[str]:
+        routed = set(cls._ROUTED_HOST_TOOLSETS)
+        return [x for x in names if x not in routed]
+
+    @staticmethod
+    def _append_gateway_toolset(names: List[str], gateway_ts: str) -> List[str]:
+        out = list(names)
+        if gateway_ts not in out:
+            out.append(gateway_ts)
+        return out
+
+    @classmethod
+    def _disabled_with_routed_toolsets(cls, disabled: List[str]) -> List[str]:
+        out = list(disabled)
+        for ts in cls._ROUTED_HOST_TOOLSETS:
+            if ts not in out:
+                out.append(ts)
+        return out
+
+    def _ensure_gateway_tools(self) -> None:
+        if HermesRuntimeBridge._gateway_tools_registered:
+            return
+        try:
+            from runtime.hermes_gateway_sandbox_tools import (
+                ensure_gateway_sandbox_tools_registered,
+            )
+
+            ensure_gateway_sandbox_tools_registered()
+        except Exception as exc:
+            logger.warning("Gateway sandbox Hermes tools not registered: %s", exc)
+        HermesRuntimeBridge._gateway_tools_registered = True
+
     def _make_agent(self, *, model_override: Optional[str] = None):
+        self._ensure_gateway_tools()
+
         kwargs: Dict[str, Any] = dict(
             quiet_mode=True,
             skip_memory=self._skip_memory,
@@ -91,14 +153,38 @@ class HermesRuntimeBridge:
         resolved = self._resolve_model(model_override)
         if resolved:
             kwargs["model"] = resolved
+        logger.info(
+            "Hermes AIAgent build: model_kwarg=%r request_override=%r env_hermes_or_llm_model=%r",
+            resolved,
+            model_override,
+            (self._model or None),
+        )
         if self._ephemeral_system_prompt:
             kwargs["ephemeral_system_prompt"] = self._ephemeral_system_prompt
         if self._platform:
             kwargs["platform"] = self._platform
+
+        gateway_ts = os.getenv("SANDBOX_GATEWAY_TOOLSET", "gateway_sandbox")
+        route = self._should_route_hermes_tools_to_sandbox()
+
         if self._enabled:
-            kwargs["enabled_toolsets"] = self._enabled
+            enabled = list(self._enabled)
+            if route:
+                enabled = self._append_gateway_toolset(
+                    self._strip_routed_host_toolsets(enabled),
+                    gateway_ts,
+                )
+            kwargs["enabled_toolsets"] = enabled
         elif self._disabled:
-            kwargs["disabled_toolsets"] = self._disabled
+            disabled = list(self._disabled)
+            if route:
+                disabled = self._disabled_with_routed_toolsets(disabled)
+            kwargs["disabled_toolsets"] = disabled
+        else:
+            if route:
+                kwargs["disabled_toolsets"] = list(self._ROUTED_HOST_TOOLSETS)
+            else:
+                pass
 
         # Optional overrides only. If unset, Hermes resolves keys/model like the CLI
         # from ~/.hermes/.env and ~/.hermes/config.yaml (same as `hermes` on the host).
@@ -133,30 +219,41 @@ class HermesRuntimeBridge:
 
         lock = self._lock_for(session_id)
         with lock:
-            agent = self._make_agent(model_override=model_override)
-            history = self._histories.get(session_id)
+            from runtime.hermes_active_context import set_active_hermes_bridge
 
+            set_active_hermes_bridge(self)
             try:
-                call_kw: Dict[str, Any] = dict(
-                    user_message=user_text,
-                    task_id=session_id,
-                )
-                if history:
-                    call_kw["conversation_history"] = history
-                result = agent.run_conversation(**call_kw)
-            except Exception as e:
-                logger.exception("Hermes run_conversation failed session_id=%s", session_id)
-                return f"[Hermes Error] {e}"
+                agent = self._make_agent(model_override=model_override)
+                history = self._histories.get(session_id)
 
-            messages = result.get("messages")
-            if messages is not None:
-                self._histories[session_id] = messages
+                try:
+                    call_kw: Dict[str, Any] = dict(
+                        user_message=user_text,
+                        task_id=session_id,
+                    )
+                    if history:
+                        call_kw["conversation_history"] = history
+                    result = agent.run_conversation(**call_kw)
+                except Exception as e:
+                    logger.exception(
+                        "Hermes run_conversation failed session_id=%s", session_id
+                    )
+                    return f"[Hermes Error] {e}"
 
-            text = (result.get("final_response") or "").strip()
-            if not text:
-                logger.warning("Hermes returned empty final_response session_id=%s", session_id)
-                return "(no response)"
-            return text
+                messages = result.get("messages")
+                if messages is not None:
+                    self._histories[session_id] = messages
+
+                text = (result.get("final_response") or "").strip()
+                if not text:
+                    logger.warning(
+                        "Hermes returned empty final_response session_id=%s",
+                        session_id,
+                    )
+                    return "(no response)"
+                return text
+            finally:
+                set_active_hermes_bridge(None)
 
     async def arun(
         self,

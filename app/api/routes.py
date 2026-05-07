@@ -10,6 +10,8 @@ from models.sandbox_contract import (
     SandboxAcquireRequest,
     SandboxAcquireResponse,
     SandboxReleaseRequest,
+    SandboxRunPythonRequest,
+    SandboxRunShellRequest,
 )
 
 router = APIRouter()
@@ -95,5 +97,26 @@ async def sandbox_release(body: SandboxReleaseRequest):
         return {"released": body.container_name, "ok": ok}
     except RuntimeError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+
+@sandbox_router.post("/run-python")
+async def sandbox_run_python(body: SandboxRunPythonRequest):
+    """Run Python inside the sandbox via AgentScope ``run_ipython_cell``."""
+    try:
+        result = await SandboxService.run_python(body.container_name, body.code)
+        return {"container_name": body.container_name, "result": result}
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+
+@sandbox_router.post("/run-shell")
+async def sandbox_run_shell(body: SandboxRunShellRequest):
+    """Run a shell command inside the sandbox via ``run_shell_command``."""
+    try:
+        result = await SandboxService.run_shell(body.container_name, body.command)
+        return {"container_name": body.container_name, "result": result}
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+
 
 router.include_router(sandbox_router)
