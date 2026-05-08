@@ -5,17 +5,77 @@ Imports ``tools.registry`` from the installed ``hermes-agent`` package.
 When SANDBOX_ROUTE_HERMES_TOOLS=1 and a manager is available, HermesRuntimeBridge
 disables built-in ``terminal`` and ``code_execution`` toolsets and exposes
 ``sandbox_shell`` / ``sandbox_python`` instead (see HermesRuntimeBridge._make_agent).
+
+Host-vs-Docker verification (no code edits required):
+  Default: handlers call SandboxManager -> commands run inside the sandbox container.
+  Set VERIFY_GATEWAY_TOOLS_ON_HOST=1 -> handlers run subprocess on the API host under
+  VERIFY_GATEWAY_TOOLS_CWD (default: process cwd). Use the same Hermes prompt twice;
+  then check whether the marker file exists on the host path vs only inside docker:
+    docker exec -it <container_name> ls -la /workspace/hermes_verify_marker.txt
+    ls -la "$VERIFY_GATEWAY_TOOLS_CWD/hermes_verify_marker.txt"
 """
 from __future__ import annotations
 
-import json
 import logging
 import os
+import subprocess
+import sys
 from typing import Any, Dict
 
 logger = logging.getLogger(__name__)
 
 _GATEWAY_TOOLSET = os.getenv("SANDBOX_GATEWAY_TOOLSET", "gateway_sandbox")
+
+
+def _tools_execute_on_host_for_verify() -> bool:
+    """When true, skip Docker and run shell/Python on the uvicorn host (local verification only)."""
+    return os.getenv("VERIFY_GATEWAY_TOOLS_ON_HOST", "").lower() in ("1", "true", "yes")
+
+
+def _verify_host_cwd() -> str:
+    return os.getenv("VERIFY_GATEWAY_TOOLS_CWD", os.getcwd())
+
+
+def _verify_timeout_sec() -> int:
+    try:
+        return max(5, int(os.getenv("VERIFY_GATEWAY_TOOLS_TIMEOUT_SEC", "120")))
+    except ValueError:
+        return 120
+
+
+def _run_shell_on_host(cmd: str) -> str:
+    cwd = _verify_host_cwd()
+    p = subprocess.run(
+        cmd,
+        shell=True,
+        cwd=cwd,
+        capture_output=True,
+        text=True,
+        timeout=_verify_timeout_sec(),
+    )
+    parts = [(p.stdout or ""), (p.stderr or "")]
+    out = "".join(parts).rstrip()
+    if p.returncode != 0:
+        suffix = f"\n[exit {p.returncode}]"
+        return (out + suffix) if out else suffix.strip()
+    return out or "(no output)"
+
+
+def _run_python_on_host(code: str) -> str:
+    cwd = _verify_host_cwd()
+    p = subprocess.run(
+        [sys.executable, "-c", code],
+        cwd=cwd,
+        capture_output=True,
+        text=True,
+        timeout=_verify_timeout_sec(),
+    )
+    parts = [(p.stdout or ""), (p.stderr or "")]
+    out = "".join(parts).rstrip()
+    if p.returncode != 0:
+        suffix = f"\n[exit {p.returncode}]"
+        return (out + suffix) if out else suffix.strip()
+    return out or "(no output)"
 
 _SHELL_SCHEMA = {
     "name": "sandbox_shell",
@@ -58,6 +118,8 @@ _PYTHON_SCHEMA = {
 def _check_gateway_sandbox_available() -> bool:
     if os.getenv("SANDBOX_ROUTE_HERMES_TOOLS", "1").lower() in ("0", "false", "no"):
         return False
+    if _tools_execute_on_host_for_verify():
+        return True
     try:
         from infra.agentscope_sandbox_service import get_agentscope_sandbox_manager
 
@@ -97,6 +159,23 @@ def _dispatch_shell(args: Dict[str, Any], task_id: str | None = None, session_id
     if not isinstance(cmd, str) or not cmd.strip():
         return tool_error("command is required")
 
+    # --- VERIFY: host execution (set VERIFY_GATEWAY_TOOLS_ON_HOST=1). Default: Docker below. ---
+    if _tools_execute_on_host_for_verify():
+        cwd = _verify_host_cwd()
+        logger.warning(
+            "VERIFY_GATEWAY_TOOLS_ON_HOST: sandbox_shell runs on API host cwd=%s",
+            cwd,
+        )
+        try:
+            out = _run_shell_on_host(cmd.strip())
+            return tool_result(result=out)
+        except subprocess.TimeoutExpired:
+            return tool_error("sandbox_shell timed out (host verify mode)")
+        except Exception as exc:
+            logger.exception("sandbox_shell failed (host verify mode)")
+            return tool_error(f"sandbox_shell failed: {exc}")
+
+    # --- Default: execute inside AgentScope sandbox container (Docker / remote manager) ---
     mgr = None
     try:
         from infra.agentscope_sandbox_service import get_agentscope_sandbox_manager
@@ -129,6 +208,23 @@ def _dispatch_python(args: Dict[str, Any], task_id: str | None = None, session_i
     if not isinstance(code, str) or not code.strip():
         return tool_error("code is required")
 
+    # --- VERIFY: host execution (set VERIFY_GATEWAY_TOOLS_ON_HOST=1). Default: Docker below. ---
+    if _tools_execute_on_host_for_verify():
+        cwd = _verify_host_cwd()
+        logger.warning(
+            "VERIFY_GATEWAY_TOOLS_ON_HOST: sandbox_python runs on API host cwd=%s",
+            cwd,
+        )
+        try:
+            out = _run_python_on_host(code.strip())
+            return tool_result(result=out)
+        except subprocess.TimeoutExpired:
+            return tool_error("sandbox_python timed out (host verify mode)")
+        except Exception as exc:
+            logger.exception("sandbox_python failed (host verify mode)")
+            return tool_error(f"sandbox_python failed: {exc}")
+
+    # --- Default: execute inside AgentScope sandbox container ---
     mgr = None
     try:
         from infra.agentscope_sandbox_service import get_agentscope_sandbox_manager
