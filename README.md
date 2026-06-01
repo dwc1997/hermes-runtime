@@ -157,14 +157,71 @@ python run_debug.py
 - 沙箱后端：Docker（AgentScope Runtime embedded pool）
 - 无认证 / 无流式响应 / 无 rate limiting
 
-### 计划演进
+### 生产级路线图
 
-1. **服务拆分**：Chat Service（无状态） + Sandbox Manager（有状态）物理分离，各自独立扩缩
-2. **对话历史入 Redis**：`_histories` → `session:{id}:history`，Chat Service 变为完全无状态
-3. **分布式锁**：`threading.Lock` → Redis SET NX，支持多 worker 并发安全
-4. **沙箱池队列 Redis 化**：`redis_enabled=True`，多 Sandbox Manager 副本共享池
-5. **K8s 后端**：`CONTAINER_DEPLOYMENT=k8s`，沙箱容器以 Pod 形式运行
-6. **gVisor 加固**：隔离级别从容器级提升到内核级
+#### P0 — 数据持久化（不丢数据）
+
+当前最大风险：对话历史存进程内存，重启全丢。
+
+- [ ] **对话历史迁入 Redis** — `_histories[session_id]` → `session:{id}:history`（LPUSH + LTRIM 保留最近 N 条）
+- [ ] **对话归档到 PostgreSQL** — 会话结束后写 `conversations` 表（摘要）+ `messages` 表（完整消息），Redis 释放内存
+- [ ] **消息全文搜索** — PostgreSQL GIN 索引 on `messages.content`，支持"上次聊的那个沙箱问题"类查询
+- [ ] **大文件存对象存储** — 用户上传的图片/文档/代码产物 → S3/MinIO，只存 URL 到数据库
+
+#### P1 — 多用户隔离（不同用户不同 AGENTS.md）
+
+当前无用户概念，session_id 客户端自报，无隔离。
+
+- [ ] **用户认证** — JWT / API Key → `user_id`，所有后续数据按 user_id 隔离
+- [ ] **用户 Profile 存储** — Redis Hash `user:{id}:profile` 存储：
+  - `agents_md` — 用户自定义 Agent 行为规则
+  - `user_md` — 用户画像（偏好、习惯、背景）
+  - `memory_md` — Agent 跨会话记忆
+  - `skills` — 用户积累的可复用技能
+- [ ] **Frozen Snapshot 注入** — 每次请求从 Redis 读取用户 profile，拼装到 system prompt，会话中途不变（保护 LLM prefix cache）
+- [ ] **新用户初始化** — 注册时写入默认 AGENTS.md 模板，user_md 和 memory_md 留空由 review agent 自动填充
+- [ ] **沙箱用户目录注入** — 创建容器时通过环境变量注入用户 profile（`-e USER_AGENTS_MD=...`），不是 volume mount
+- [ ] **开启 Hermes memory/context_files** — `HERMES_SKIP_MEMORY=false`, `HERMES_SKIP_CONTEXT_FILES=false`（当前硬编码 true）
+
+#### P2 — 高可用（无状态集群）
+
+当前单实例，进程内存状态，无容错。
+
+- [ ] **Chat Service 无状态化** — 所有状态迁入 Redis，Hermes 实例本身无任何本地状态
+- [ ] **负载均衡** — Nginx / ALB 前置，多 Hermes 实例无差别服务
+- [ ] **Redis Cluster** — 主从 + 哨兵，防 Redis 单点故障
+- [ ] **分布式锁** — `threading.Lock` → Redis SET NX，支持多 worker 并发安全
+- [ ] **沙箱池 Redis 化** — `redis_enabled=True`，多 Sandbox Manager 副本共享容器池
+- [ ] **服务拆分** — Chat Service（无状态）+ Sandbox Manager（有状态）物理分离，各自独立扩缩
+- [ ] **K8s 后端** — `CONTAINER_DEPLOYMENT=k8s`，沙箱容器以 Pod 形式运行
+- [ ] **gVisor 加固** — 隔离级别从容器级提升到内核级
+
+#### P3 — 自进化能力（Agent 持续学习）
+
+当前 Agent 无记忆，每次对话从零开始。
+
+- [ ] **后台 Review 机制** — 每轮对话结束后 fork 轻量 LLM 回放对话，判断是否需要保存 memory 或创建/更新 skill
+  - 工具白名单：只开放 memory_write + skill_manage
+  - 异步守护线程，不阻塞用户响应
+  - Review prompt 从 Hermes `background_review.py` 移植（170 行纯文本）
+- [ ] **Review 触发策略** — 每 3-5 轮触发一次（不是每轮），用便宜模型（qwen3-flash），控制 token 成本
+- [ ] **Skill 生命周期管理（Curator）** — 每 7 天空闲时运行：
+  - 30 天没用的 skill → 标记 stale
+  - 90 天没用的 skill → 归档（不删除）
+  - 合并重叠的 skill
+  - 生成审查报告
+- [ ] **技能版本化** — PostgreSQL `skills` 表支持 version 字段，`skill_changes` 表记录每次变更的 diff 和触发源
+- [ ] **用户偏好捕获** — 用户纠正 style/tone/format/verbosity → review agent 自动更新对应 skill（不是只存 memory）
+
+#### P4 — 生产加固（可观测、可控制）
+
+- [ ] **流式响应** — SSE / WebSocket，前端实时显示 token
+- [ ] **Rate Limiting** — 按 user_id 限流（Redis 令牌桶）
+- [ ] **配额管理** — 每用户 token 预算，超限拒绝
+- [ ] **可观测性** — 请求 trace_id 贯穿全链路，Prometheus 指标 + Grafana 面板
+- [ ] **审计日志** — 每次 tool call 记录 user_id/session_id/tool_name/args/result_hash
+- [ ] **沙箱资源限制** — 容器 CPU/内存/磁盘/网络配额，防恶意代码耗尽资源
+- [ ] **优雅降级** — 沙箱不可用时降级到无沙箱模式（记录 warning，不阻断服务）
 
 ## Hermes 配置提示
 
